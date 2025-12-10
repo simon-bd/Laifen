@@ -3,6 +3,8 @@ import asyncio
 import json
 import os
 from bleak import BleakError, BleakClient, BleakScanner
+from bleak_retry_connector import establish_connection, BleakClientWithServiceCache
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ class Laifen:
         self.has_connected_before = False  # ✅ Tracks connection history
         self.address = ble_device.address
         self.name = ble_device.name or "Laifen"
-        self.client = BleakClient(ble_device)
+        self.client = None  # Changed: let establish_connection create the client
         self.result = {}
         self.coordinator = coordinator
         self.lock = asyncio.Lock()  # Ensure concurrency safety
@@ -39,10 +41,7 @@ class Laifen:
 
 
     async def connect(self):
-        if not self.client:
-            self.client = BleakClient(self.ble_device)
-            
-        if self.client.is_connected:
+        if self.client and self.client.is_connected:
             _LOGGER.debug(f"{self.ble_device.address} Already Connected!")
             return True
 
@@ -51,8 +50,13 @@ class Laifen:
             try:
                 if attempt == 1:
                     _LOGGER.debug(f"Starting connection attempts to {self.ble_device.address}")
-                await asyncio.wait_for(self.client.connect(), timeout=10)
-                await asyncio.sleep(2)
+                # Changed: use establish_connection instead of client.connect()
+                self.client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    self.ble_device,
+                    self.ble_device.name or self.ble_device.address,
+                    max_attempts=1  # Only 1 attempt per loop iteration
+                )
 
                 # ✅ Log all characteristics for debug purposes
                 # services = await self.client.get_services()
@@ -263,8 +267,8 @@ class Laifen:
 
         self.ble_device = ble_device
         self.address = ble_device.address
-        self.client = BleakClient(self.ble_device)  # ✅ Always reset client
-        self.client.set_disconnected_callback(self._handle_disconnect)
+        self.client = None  # Changed: let establish_connection create the client
+        # Note: disconnected_callback will be set in connect()
 
     
     async def disconnect(self):
@@ -306,9 +310,7 @@ class Laifen:
                         await asyncio.sleep(initial_delay)
                         _LOGGER.info(f"Reconnect attempt {attempt + 1}/{max_attempts} for {self.address}")
 
-                        if not self.client:
-                            self.client = BleakClient(self.ble_device)
-
+                        # Removed: client creation now handled by establish_connection in connect()
                         if await self.connect():
                             await self.start_notifications()
                             await self.gatherdata()
@@ -322,5 +324,3 @@ class Laifen:
             self.coordinator.device_asleep = True
             self.coordinator.async_set_updated_data(cached or {})
             return False
-
-
